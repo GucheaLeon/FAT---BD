@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## [1.3.0] - 2026/09/07
+
+### Agregado
+* Se añadieron planes de tratamiento en el módulo de informe, junto con sus mapeos correspondientes.
+
+### Modificado
+* Se corrigieron errores en el módulo de informe (inicial y evolutivo), se ajustaron los mapeos y se mejoró la descarga de PDFs.
+
+
+---
+
 ## [1.2.9] - 2026/09/04
 
 ### Agregado
