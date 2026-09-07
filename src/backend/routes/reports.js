@@ -12,12 +12,25 @@ const INFORMES_DIR = [
 const DEFAULT_TEMPLATES = [
   { match: /^INFORMES_EVOLUTIVOS\.pdf$/i, type: 'initial', code: 'MII-INFORME-INICIAL' },
   { match: /^INFORMES_EVOLUTIVOS\.pdf$/i, type: 'evolution', code: 'MII-INFORME-EVOLUTIVO' },
-  { match: /^6-PLAN DE TRABAJO\.pdf$/i, type: 'treatment_plan', code: 'CENEIN-PLAN' },
+  { match: /^Plan de Tratamiento\.pdf$/i, type: 'treatment_plan', code: 'CENEIN-PLAN' },
 ];
 const typeLabel = { initial: 'Informe inicial', evolution: 'Informe evolutivo', treatment_plan: 'Plan de tratamiento' };
 
 const normalize = (value) => String(value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 const cleanTreatment = (value) => String(value || '').trim();
+const formatDayMonth = (value) => {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${match[3]}/${match[2]}` : String(value || '');
+};
+const formatPeriodYears = (start, end) => {
+  const startYear = Number(String(start || '').slice(0, 4));
+  const endYear = Number(String(end || '').slice(0, 4));
+  if (!Number.isInteger(startYear) || !Number.isInteger(endYear)) return '';
+  return Array.from(
+    { length: endYear - startYear + 1 },
+    (_, index) => String(startYear + index),
+  ).join(' / ');
+};
 
 function chooseTemplate(templates, { insurerId, treatmentName, reportType, year }) {
   const candidates = templates.filter((template) => template.report_type === reportType && Number(template.year_version) <= year);
@@ -52,7 +65,19 @@ async function ensureDefaultTemplates(db) {
       if (!definitions.length) continue;
       const data = fs.readFileSync(path.join(INFORMES_DIR, entry));
       for (const definition of definitions) {
-        const existing = await db.get('SELECT id, file_data FROM REPORT_TEMPLATES WHERE form_code = ? AND year_version = ?', definition.code, new Date().getFullYear());
+        const existing = await db.get(
+          `SELECT id, file_data FROM REPORT_TEMPLATES
+           WHERE year_version = ? AND (
+             form_code = ? OR
+             (report_type = ? AND is_default = true)
+           )
+           ORDER BY CASE WHEN form_code = ? THEN 0 ELSE 1 END, id
+           LIMIT 1`,
+          new Date().getFullYear(),
+          definition.code,
+          definition.type,
+          definition.code,
+        );
         if (existing) {
           if (!existing.file_data || !Buffer.from(existing.file_data).equals(data)) {
             await db.run('UPDATE REPORT_TEMPLATES SET filename = ?, file_data = ? WHERE id = ?', entry, data, existing.id);
@@ -81,7 +106,23 @@ async function renderPdf(templateData, patient, content) {
     prestacion: patient.treatment,
     prestador: content.provider,
     fecha: content.reportDate,
+    diagnostico: patient.diagnosis,
     tipo: content.reportKind,
+    desde: content.periodStart,
+    hasta: content.periodEnd,
+    periodoDesde: content.periodStart,
+    periodoHasta: content.periodEnd,
+    periodoDesdeDiaMes: formatDayMonth(content.periodStart),
+    periodoHastaDiaMes: formatDayMonth(content.periodEnd),
+    periodoAnios: formatPeriodYears(content.periodStart, content.periodEnd),
+    modalidad: content.modality,
+    abordaje: content.approach,
+    abordajeEstrategias: content.approach,
+    abordajeYEstrategiasAUtilizar: content.approach,
+    objetivos: content.objectives,
+    objetivosCortoLargoPlazo: content.objectives,
+    participacionFamilia: content.familyParticipation,
+    descripcionParticipacionFamilia: content.familyParticipation,
     informe: content.notes,
     tipoinicial: content.reportKind === 'Inicial' ? 'X' : '',
     tipoevolutivo: content.reportKind === 'Evolutivo' ? 'X' : '',
@@ -97,6 +138,20 @@ async function renderPdf(templateData, patient, content) {
     Text19: 'informe',
     Text21: 'fecha',
   };
+  const treatmentPlanFieldMap = {
+    Text1: 'fecha',
+    Text2: 'paciente',
+    Text3: 'tipoDocumento',
+    Text4: 'nroDocumento',
+    Text5: 'prestacion',
+    Text6: 'periodoDesdeDiaMes',
+    Text7: 'periodoHastaDiaMes',
+    Text9: 'periodoAnios',
+    Text10: 'modalidad',
+    Text11: 'abordaje',
+    Text12: 'objetivos',
+    Text13: 'participacionFamilia',
+  };
   const normalizedValues = Object.fromEntries(
     Object.entries(values).map(([key, value]) => [
       normalize(key).replace(/[^a-z0-9]/g, ''),
@@ -111,7 +166,10 @@ async function renderPdf(templateData, patient, content) {
       widget.dict.delete(PDFName.of('BS'));
     }
     const key = normalize(field.getName()).replace(/[^a-z0-9]/g, '');
-    const mappedKey = legacyFieldMap[field.getName()] || key;
+    const fieldMap = content.reportKind === 'Plan de tratamiento'
+      ? treatmentPlanFieldMap
+      : legacyFieldMap;
+    const mappedKey = fieldMap[field.getName()] || key;
     const value = normalizedValues[normalize(mappedKey).replace(/[^a-z0-9]/g, '')];
     if (value == null) continue;
     if (typeof field.check === 'function' && typeof field.uncheck === 'function') {
@@ -128,8 +186,12 @@ async function renderPdf(templateData, patient, content) {
     ['Obra social', patient.insurer], ['Prestación', patient.treatment], ['Módulo clínico', patient.module], ['Prestador', content.provider],
     ['Fecha', content.reportDate], ['Tipo', content.reportKind], ['Diagnóstico', patient.diagnosis],
     ['Instrumentos y resultados', content.assessment], ['Período de abordaje', content.treatmentPeriod],
-    ['Modalidad de prestación', content.modality], ['Intervenciones realizadas', content.interventions],
-    ['Resultados alcanzados', content.results], ['Notas', content.notes], ['Firma del profesional', content.signature],
+    ['Modalidad de prestación', content.modality], ['Desde', content.periodStart], ['Hasta', content.periodEnd],
+    ['Abordaje y estrategias a utilizar', content.approach],
+    ['Objetivos a corto y largo plazo', content.objectives],
+    ['Participación de la familia', content.familyParticipation],
+    ['Intervenciones realizadas', content.interventions], ['Resultados alcanzados', content.results],
+    ['Notas', content.notes], ['Firma del profesional', content.signature],
     ['Aclaración', content.signatureClarification],
   ].filter(([, value]) => String(value || '').trim());
   const pages = pdf.getPages();
@@ -160,6 +222,25 @@ async function prepararInforme(db, body, templateId = null) {
     error.status = 400;
     throw error;
   }
+  const content = parseContent(body.content);
+  if (reportType === 'treatment_plan') {
+    const periodStart = String(content.periodStart || '').trim();
+    const periodEnd = String(content.periodEnd || '').trim();
+    const requiredFields = ['modality', 'approach', 'objectives', 'familyParticipation'];
+    const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
+    if (
+      requiredFields.some((field) => !String(content[field] || '').trim()) ||
+      !isIsoDate(reportDate) ||
+      !isIsoDate(periodStart) ||
+      !isIsoDate(periodEnd) ||
+      reportDate >= periodStart ||
+      periodStart >= periodEnd
+    ) {
+      const error = new Error('La fecha principal debe ser anterior al inicio y el período debe finalizar después de comenzar.');
+      error.status = 400;
+      throw error;
+    }
+  }
   await ensureDefaultTemplates(db);
   const patient = await db.get(`SELECT p.*, o.name AS obra_social_name FROM PATIENTS p LEFT JOIN OS o ON o.id = p.os_id WHERE p.patient_id = ?`, patientId);
   if (!patient) { const error = new Error('Paciente no encontrado.'); error.status = 404; throw error; }
@@ -169,7 +250,16 @@ async function prepararInforme(db, body, templateId = null) {
   if (!template) { const error = new Error('No existe una plantilla compatible para esta combinación.'); error.status = 409; throw error; }
   patient.moduleName = String(body.moduleName || '').trim();
   const snapshot = snapshotPatient(patient, treatmentName);
-  const clinicalContent = { ...parseContent(body.content), reportDate, reportKind: reportType === 'initial' ? 'Inicial' : 'Evolutivo' };
+  const clinicalContent = {
+    ...content,
+    reportDate,
+    reportKind:
+      reportType === 'initial'
+        ? 'Inicial'
+        : reportType === 'treatment_plan'
+          ? 'Plan de tratamiento'
+          : 'Evolutivo',
+  };
   const pdf = await renderPdf(template.file_data, snapshot, clinicalContent);
   return { patientId, treatmentName, reportType, year, patient, template, snapshot, clinicalContent, pdf, reportDate, periodMonth };
 }

@@ -17,11 +17,27 @@ const REPORT_TYPES = [
   { value: "initial", label: "Informe de evaluación inicial" },
   { value: "evolution", label: "Informe evolutivo de la prestación" },
 ];
-const EMPTY = { provider: "", notes: "" };
+const EMPTY = {
+  provider: "",
+  notes: "",
+  periodStart: "",
+  periodEnd: "",
+  modality: "",
+  approach: "",
+  objectives: "",
+  familyParticipation: "",
+};
 const inputClass =
   "w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20";
+const shiftDate = (value, days) => {
+  if (!value) return "";
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
 const typeLabel = (value) =>
-  REPORT_TYPES.find((item) => item.value === value)?.label || value;
+  [...REPORT_TYPES, ...DOCUMENT_TYPES].find((item) => item.value === value)
+    ?.label || value;
 const isAdmitted = (patient) => {
   const state = String(patient.estadoPaciente || "").toLowerCase();
   return (
@@ -70,6 +86,14 @@ export default function Informes() {
     content: { ...EMPTY },
   });
   const patient = patients.find((item) => item.id === patientId);
+  const isTreatmentPlan = form.documentType === "treatment_plan";
+  const invalidTreatmentDates =
+    isTreatmentPlan &&
+    form.reportDate &&
+    form.content.periodStart &&
+    form.content.periodEnd &&
+    (form.reportDate >= form.content.periodStart ||
+      form.content.periodStart >= form.content.periodEnd);
   const patientReports = reports
     .filter((item) => item.patientId === patientId)
     .sort((a, b) => String(b.reportDate).localeCompare(String(a.reportDate)));
@@ -110,9 +134,9 @@ export default function Informes() {
     }));
   const saveReport = async (event) => {
     event.preventDefault();
-    if (form.documentType !== "evaluation") {
+    if (invalidTreatmentDates) {
       setMessage(
-        "El formulario del plan de tratamiento se implementará en la próxima etapa.",
+        "La fecha principal debe ser anterior al inicio y el período debe finalizar después de comenzar.",
       );
       return;
     }
@@ -121,6 +145,10 @@ export default function Informes() {
       const payload = {
         patientId,
         ...form,
+        reportType:
+          form.documentType === "treatment_plan"
+            ? "treatment_plan"
+            : form.reportType,
       };
       if (editingId) await actualizarInformeApi(editingId, payload);
       else await crearInformeApi(payload);
@@ -137,8 +165,11 @@ export default function Informes() {
   const edit = async (id) => {
     const report = await obtenerInformeApi(id);
     setForm({
-      documentType: "evaluation",
-      reportType: report.reportType,
+      documentType:
+        report.reportType === "treatment_plan"
+          ? "treatment_plan"
+          : "evaluation",
+      reportType: report.reportType === "treatment_plan" ? "" : report.reportType,
       reportDate: report.reportDate,
       treatmentName: report.treatmentName,
       content: { ...EMPTY, ...(report.content || {}) },
@@ -379,11 +410,60 @@ export default function Informes() {
                           required
                           type="date"
                           value={form.reportDate}
+                            max={
+                              isTreatmentPlan
+                                ? shiftDate(form.content.periodStart, -1)
+                                : undefined
+                            }
                           onChange={(e) => changeDate(e.target.value)}
                           className={inputClass}
                         />
                       </label>
                     </div>
+                    {form.documentType === "treatment_plan" && (
+                      <div className="mt-5">
+                        <h4 className="mb-3 text-sm font-bold text-slate-900">
+                          Período de la prestación
+                        </h4>
+                        <div className="grid gap-4 sm:grid-cols-2">
+                          <label>
+                            <span className="mb-1 block text-xs font-bold">
+                              Desde
+                            </span>
+                            <input
+                              required
+                              type="date"
+                              value={form.content.periodStart}
+                              min={shiftDate(form.reportDate, 1)}
+                              onChange={(e) =>
+                                setContent("periodStart", e.target.value)
+                              }
+                              className={inputClass}
+                            />
+                          </label>
+                          <label>
+                            <span className="mb-1 block text-xs font-bold">
+                              Hasta
+                            </span>
+                            <input
+                              required
+                              type="date"
+                              value={form.content.periodEnd}
+                              min={shiftDate(form.content.periodStart, 1)}
+                              onChange={(e) =>
+                                setContent("periodEnd", e.target.value)
+                              }
+                              className={inputClass}
+                            />
+                          </label>
+                        </div>
+                        {invalidTreatmentDates && (
+                          <p className="mt-2 text-sm font-semibold text-rose-700">
+                            La fecha principal debe ser anterior al inicio, y “Hasta” posterior a “Desde”.
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {form.documentType === "evaluation" && (
                       <>
                         <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -448,23 +528,90 @@ export default function Informes() {
                       </>
                     )}
                     {form.documentType === "treatment_plan" && (
-                      <p className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800">
-                        Plan de tratamiento seleccionado. El formulario
-                        específico se agregará en la próxima etapa.
-                      </p>
+                      <div className="mt-5">
+                        <h4 className="mb-3 text-sm font-bold text-slate-900">
+                          Datos a completar
+                        </h4>
+                        <div className="grid gap-4">
+                          <label>
+                            <span className="mb-1 block text-xs font-bold">
+                              Modalidad
+                            </span>
+                            <input
+                              required
+                              value={form.content.modality}
+                              onChange={(e) =>
+                                setContent("modality", e.target.value)
+                              }
+                              className={inputClass}
+                            />
+                          </label>
+                          <label>
+                            <span className="mb-1 block text-xs font-bold">
+                              Abordaje y estrategias a utilizar
+                            </span>
+                            <textarea
+                              required
+                              rows={4}
+                              value={form.content.approach}
+                              onChange={(e) =>
+                                setContent("approach", e.target.value)
+                              }
+                              className={inputClass}
+                            />
+                          </label>
+                          <label>
+                            <span className="mb-1 block text-xs font-bold">
+                              Objetivos a corto y largo plazo, logrados y no logrados según diagnóstico
+                            </span>
+                            <textarea
+                              required
+                              rows={5}
+                              value={form.content.objectives}
+                              onChange={(e) =>
+                                setContent("objectives", e.target.value)
+                              }
+                              className={inputClass}
+                            />
+                          </label>
+                          <label>
+                            <span className="mb-1 block text-xs font-bold">
+                              Descripción de la participación de la familia
+                            </span>
+                            <textarea
+                              required
+                              rows={4}
+                              value={form.content.familyParticipation}
+                              onChange={(e) =>
+                                setContent("familyParticipation", e.target.value)
+                              }
+                              className={inputClass}
+                            />
+                          </label>
+                        </div>
+                      </div>
                     )}
                     <button
                       disabled={
                         busy ||
-                        !form.reportType ||
                         !form.treatmentName ||
                         !form.reportDate ||
-                        !form.content.provider ||
-                        !form.content.notes
+                        invalidTreatmentDates ||
+                        (form.documentType === "evaluation" &&
+                          (!form.reportType ||
+                            !form.content.provider ||
+                            !form.content.notes)) ||
+                        (form.documentType === "treatment_plan" &&
+                          (!form.content.periodStart ||
+                            !form.content.periodEnd ||
+                            !form.content.modality ||
+                            !form.content.approach ||
+                            !form.content.objectives ||
+                            !form.content.familyParticipation))
                       }
                       className="mt-5 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50"
                     >
-                      {busy ? "Guardando..." : "Guardar informe"}
+                      {busy ? "Guardando..." : "Guardar documento"}
                     </button>
                   </form>
                 )}
